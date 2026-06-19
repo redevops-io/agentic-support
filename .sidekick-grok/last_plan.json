@@ -1,0 +1,104 @@
+{
+  "task": "Read ./_brief.md and ./AGENTS.md fully, then implement this repo exactly per AGENTS.md. Use the SPECIFIC open-source components named in _brief.md by name (the exact firewall/IDS/billing/analytics/etc tools and the exact positioning) - do NOT write generic placeholder content. Ensure README.md, an install (docker-compose.yml or install.sh), an agents/ directory, docs/, and .env.example all exist before finishing.",
+  "subtasks": [
+    {
+      "id": "install-infra",
+      "title": "One-command install (docker-compose + install.sh) and env",
+      "description": "Create the one-command install standing up the OSS core named in _brief.md PLUS the agent service. Write docker-compose.yml with services: chatwoot (OSS support core), postgres (PostgreSQL), redis (Redis), elasticsearch (Elasticsearch for full-text search), nginx (reverse proxy/SSL termination), ollama (local LLM inference for Llama 3.1 8B / Mixtral 8x7B exposing its OpenAI-compatible endpoint), and an 'agents' service that builds from ./agents (do NOT define files inside agents/ here \u2014 only reference the build context and wire env OPENAI_BASE_URL=http://ollama:11434/v1, OPENAI_API_KEY, MODEL). Create install.sh (bash, set -euo pipefail) that copies .env.example to .env if missing, pulls the Ollama model, and runs 'docker compose up -d'. Create .env.example documenting OPENAI_BASE_URL, OPENAI_API_KEY, MODEL, POSTGRES_*, REDIS_URL, plus Chatwoot SECRET_KEY_BASE/FRONTEND_URL and escalation thresholds. Create deploy/nginx.conf for the reverse proxy. Use the exact tool names from the brief; no invented metrics.",
+      "target_files": [
+        "docker-compose.yml",
+        "install.sh",
+        ".env.example",
+        "deploy/nginx.conf"
+      ],
+      "deps": [],
+      "acceptance_checks": [
+        "test -f docker-compose.yml && test -f install.sh && test -f .env.example && test -f deploy/nginx.conf",
+        "bash -n install.sh",
+        "grep -qi chatwoot docker-compose.yml && grep -qi ollama docker-compose.yml && grep -qi elasticsearch docker-compose.yml",
+        "grep -q OPENAI_BASE_URL .env.example && grep -q MODEL .env.example"
+      ]
+    },
+    {
+      "id": "agents-layer",
+      "title": "Python agentic layer (triage/resolution/escalation + tools + guardrails)",
+      "description": "Build agents/ as the Python agentic layer that talks to an OpenAI-compatible LLM endpoint via env OPENAI_BASE_URL/OPENAI_API_KEY/MODEL and references the shared lib github.com/redevops-io/agent-harness (import it / list it in requirements). Implement a LangGraph-orchestrated workflow with three agents from the brief: Triage (routing/categorization), Resolution (draft response, knowledge-base search), Escalation (detect complex issues, route to human). Files: agents/__init__.py; agents/llm.py (OpenAI-compatible client reading the three env vars); agents/agents.py (the three agent definitions + LangGraph graph wiring); agents/tools.py (tools: ticket lookup, KB search, draft reply, create escalation); agents/guardrails.py (human-in-the-loop boundaries from the brief: no financial transactions, escalate on explicit human request, financial liability >$500, legal/compliance, 3+ failed attempts, CSAT <2/5); agents/main.py (entrypoint); agents/requirements.txt (langgraph, openai, the agent-harness ref); agents/Dockerfile (python:3.12-slim, installs requirements, runs main). Keep everything importable/compilable offline. No invented benchmarks.",
+      "target_files": [
+        "agents/__init__.py",
+        "agents/llm.py",
+        "agents/agents.py",
+        "agents/tools.py",
+        "agents/guardrails.py",
+        "agents/main.py",
+        "agents/requirements.txt",
+        "agents/Dockerfile"
+      ],
+      "deps": [],
+      "acceptance_checks": [
+        "python -m py_compile agents/*.py",
+        "test -f agents/requirements.txt && test -f agents/Dockerfile",
+        "grep -q OPENAI_BASE_URL agents/llm.py && grep -q MODEL agents/llm.py",
+        "grep -qi agent-harness agents/requirements.txt"
+      ]
+    },
+    {
+      "id": "agents-tests",
+      "title": "Guardrail and tool unit tests",
+      "description": "Add tests/ validating the agent layer's deterministic logic without calling a live LLM. tests/test_guardrails.py asserts the escalation triggers from the brief fire correctly (explicit human request, financial liability >$500, CSAT <2/5, 3+ failed attempts, legal/compliance). tests/test_tools.py asserts tool input/output contracts. Mock or stub the LLM client; tests must run offline. Add a minimal tests/conftest.py if needed for import paths.",
+      "target_files": [
+        "tests/test_guardrails.py",
+        "tests/test_tools.py",
+        "tests/conftest.py"
+      ],
+      "deps": [
+        "agents-layer"
+      ],
+      "acceptance_checks": [
+        "python -m pytest tests/ -q"
+      ]
+    },
+    {
+      "id": "readme",
+      "title": "README.md positioning, architecture, quickstart",
+      "description": "Write README.md using the brief as source of truth. Include the pain->legacy->redevops triplet (SME owners wearing multiple hats / drowning in inquiries -> Zendesk/Intercom per-seat lock-in & Chatwoot-style OSS having no AI agents -> redevops.io self-hosted agentic platform) and 3-5 value props from the brief (no per-seat pricing / one-time cost, self-hosted data ownership & GDPR, agentic vs chatbot resolution, built for mid-market). Describe what it does, the architecture (OSS core: Chatwoot + PostgreSQL + Redis + Elasticsearch + Nginx + Ollama; agent layer: LangGraph + Sidekick orchestrator referencing agent-harness), and a quickstart pointing at install.sh / docker compose and .env. Keep AGPL note. Use exact tool names; do not invent benchmarks beyond what the brief states.",
+      "target_files": [
+        "README.md"
+      ],
+      "deps": [],
+      "acceptance_checks": [
+        "test -f README.md",
+        "grep -qi chatwoot README.md && grep -qi ollama README.md && grep -qi langgraph README.md",
+        "grep -qi 'per-seat' README.md && grep -qi 'self-hosted' README.md"
+      ]
+    },
+    {
+      "id": "docs",
+      "title": "docs/architecture.md and docs/configuration.md",
+      "description": "Write docs/architecture.md describing the OSS-core + agent-layer architecture from the brief (omnichannel ingest -> Chatwoot core -> Sidekick/LangGraph orchestrator with Triage/Resolution/Escalation agents -> Ollama local LLM -> PostgreSQL/Redis/Elasticsearch, with human-in-the-loop dashboard), reusing the brief's component names. Write docs/configuration.md documenting every env var in .env.example (OPENAI_BASE_URL/OPENAI_API_KEY/MODEL, datastore connection vars, Chatwoot vars, escalation thresholds) and how to point MODEL at a different Ollama model. No invented metrics.",
+      "target_files": [
+        "docs/architecture.md",
+        "docs/configuration.md"
+      ],
+      "deps": [],
+      "acceptance_checks": [
+        "test -f docs/architecture.md && test -f docs/configuration.md",
+        "grep -qi ollama docs/architecture.md && grep -qi langgraph docs/architecture.md",
+        "grep -q OPENAI_BASE_URL docs/configuration.md"
+      ]
+    },
+    {
+      "id": "makefile",
+      "title": "Makefile task runner",
+      "description": "Create a Makefile with phony targets wrapping the workflow: 'install' (runs ./install.sh), 'up'/'down' (docker compose up -d / down), 'logs', 'test' (python -m pytest tests/ -q), and 'model-pull' (ollama pull of the MODEL). Targets should reference the same commands used by install.sh and the agents tests so they stay consistent.",
+      "target_files": [
+        "Makefile"
+      ],
+      "deps": [],
+      "acceptance_checks": [
+        "test -f Makefile",
+        "make -n test",
+        "make -n up"
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+{
+  "task": "Read ./_brief.md and ./AGENTS.md fully, then implement this repo exactly per AGENTS.md. Use the SPECIFIC open-source components named in _brief.md by name (the exact firewall/IDS/billing/analytics/etc tools and the exact positioning) - do NOT write generic placeholder content. Ensure README.md, an install (docker-compose.yml or install.sh), an agents/ directory, docs/, and .env.example all exist before finishing.",
+  "key_files": [],
+  "notes": [],
+  "open_subtasks": [
+    "install-infra",
+    "agents-layer",
+    "agents-tests",
+    "readme",
+    "docs",
+    "makefile"
+  ],
+  "done_subtasks": [
+    "install-infra",
+    "agents-layer",
+    "readme",
+    "docs",
+    "makefile"
+  ]
+}
