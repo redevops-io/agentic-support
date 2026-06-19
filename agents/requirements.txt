@@ -1,0 +1,3 @@
+langgraph>=0.0.20
+openai>=1.0.0
+github.com/redevops-io/agent-harness
