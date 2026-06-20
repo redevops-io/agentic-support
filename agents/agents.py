@@ -45,12 +45,13 @@ def escalation_node(state: AgentState) -> AgentState:
     return state
 
 
-def router(state: AgentState) -> Literal["escalation", "resolution", "__end__"]:
+def router(state: AgentState) -> Literal["escalation", "resolution"]:
     if guardrails.should_escalate(state):
         return "escalation"
-    if state.get("category") == "billing":
-        return "resolution"
-    return "__end__"
+    # Billing and general tickets both get a resolution attempt; tickets that
+    # need a human are handled by the escalation branch above. This avoids
+    # silently dropping "general" tickets to __end__ with no reply or handoff.
+    return "resolution"
 
 
 def build_graph():
@@ -62,7 +63,6 @@ def build_graph():
     workflow.add_conditional_edges("triage", router, {
         "escalation": "escalation",
         "resolution": "resolution",
-        "__end__": END,
     })
     workflow.add_edge("resolution", END)
     workflow.add_edge("escalation", END)

@@ -1,6 +1,7 @@
 """Guardrails / human-in-the-loop boundaries."""
 
 import os
+from typing import Dict
 
 
 def should_escalate(state: Dict) -> bool:
