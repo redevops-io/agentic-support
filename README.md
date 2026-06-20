@@ -1,45 +1,166 @@
-# redevops.io
+# agentic-support — agent layer + dashboard over a real Chatwoot core
 
-Self-hosted agentic customer support platform.
+The support vertical slice, built on the **agentic-billing** reference pattern. It wraps
+the running self-hosted **Chatwoot** instance (the open-source shared-inbox / support
+core) with:
 
-## The Problem
+- an **agent layer** that reads REAL Chatwoot data over its REST API, and
+- an **MD3 dashboard** (Zendesk/Intercom-style: KPI tiles, channel-breakdown bars, a
+  live ticket queue with priority pills + age) rendered from that live data — no mock data,
 
-SME owners wear multiple hats and are drowning in support inquiries. Legacy solutions trap teams in Zendesk/Intercom per-seat lock-in. Chatwoot-style OSS provides a capable base but has no AI agents.
+for the demo tenant **Summit Roofing Co.** (a roofing contractor).
 
-redevops.io delivers the self-hosted agentic platform that closes the gap.
+```
+Chatwoot (OSS core, :3003) ──REST──▶ app.py (FastAPI, :8207) ──▶ MD3 dashboard + /api/activity + /agent/run
+        ▲                                                          agentic actions (draft_reply, resolve, escalate)
+        └── seed.py / seed.rb bootstrap super-admin + account + inbox + contacts + 7 conversations (idempotent)
+```
 
-## Value Propositions
+## Files
 
-- No per-seat pricing, one-time cost
-- Self-hosted data ownership & GDPR compliance
-- Agentic resolution (not chatbots)
-- Built for mid-market teams
+| File | Purpose |
+|------|---------|
+| `../../cores/chatwoot.compose.yml` | The Chatwoot core: `rails` (web, host 3003→3000), `sidekiq` (1 worker), `postgres` (`pgvector/pgvector:pg16`), `redis`. `seccomp=unconfined, apparmor=unconfined` on each. |
+| `seed.rb` | Idempotent Ruby seed run via `rails runner` inside the Chatwoot rails container. Creates the super-admin user, account, API inbox, 2 contacts, 7 roofing conversations across open/pending/resolved, and reads the agent access token back. |
+| `seed.py` | Repeatable wrapper: copies `seed.rb` into the container, runs it, captures `ACCESS_TOKEN` + `ACCOUNT_ID`, writes `.env`. |
+| `app.py` | FastAPI service (port 8207): `/health`, `/api/activity`, `/` dashboard, `/agent/run`. |
+| `requirements.txt` | fastapi, uvicorn, httpx. |
+| `Dockerfile` | slim-python image running `uvicorn app:app --port 8207`. |
+| `.env` | Written by `seed.py`: `CHATWOOT_API_URL`, `CHATWOOT_API_TOKEN`, `CHATWOOT_ACCOUNT_ID`, `CHATWOOT_FRONT_URL`. |
 
-## What It Does
+## Chatwoot bootstrap method (the one that worked)
 
-redevops.io combines open-source support infrastructure with an autonomous agent layer. It ingests inquiries, routes them through intelligent agents, and resolves issues without constant human intervention while keeping every byte of customer data under your control.
+Self-hosted Chatwoot needs its schema + a super-admin before its API is usable. The
+reliable bootstrap is the project's own one-time rake task **inside the rails container**:
 
-## Architecture
+```bash
+cd cores
+sudo docker compose -f chatwoot.compose.yml up -d postgres redis
+# one-time: creates the full schema (92 tables) + super admin
+sudo docker compose -f chatwoot.compose.yml run --rm rails bundle exec rails db:chatwoot_prepare
+sudo docker compose -f chatwoot.compose.yml up -d            # rails + sidekiq
+```
 
-### OSS Core
-- Chatwoot
-- PostgreSQL
-- Redis
-- Elasticsearch
-- Nginx
-- Ollama
+Key facts discovered while bringing it up:
 
-### Agent Layer
-- LangGraph
-- Sidekick orchestrator (see agent-harness)
+- The web service answers `/api` with **200** as soon as Rails is ready; `GET /` returns
+  a **302** redirect to `/installation/onboarding` (or `/app/login`) — a 302 here means
+  Rails is *healthy*, not down.
+- The **API access token** is a `User#access_token.token` (Chatwoot auto-creates an
+  `AccessToken` per user via a model callback). It is sent on every API call as the
+  **`api_access_token`** header (not a Bearer token). **Where to find it:** `seed.py`
+  prints `ACCESS_TOKEN=<value>` and writes it to `.env`; or read it directly:
+  ```bash
+  sudo docker exec agentic-chatwoot-rails-1 bundle exec rails runner \
+    'puts User.find_by(email: "admin@summitroofing.test").access_token.token'
+  ```
+  In the UI it lives under **Profile Settings → Access Token**.
+- Conversations are listed per account and **filtered by status** with
+  `GET /api/v1/accounts/{id}/conversations?status=open|pending|resolved` (the default
+  list returns only `open`).
+- A conversation's opening customer message is the message with `message_type == 0`
+  (incoming); `message_type == 1` is outgoing, `2` is an activity event.
 
-## Quickstart
+## Seeded data — "Summit Roofing Co." (account 1, inbox 1)
 
-1. Clone the repository.
-2. Copy `.env.example` to `.env` and configure values.
-3. Run `./install.sh` or `docker compose up -d`.
+7 roofing-support conversations across 2 contacts (Dana Henderson, Marcus Webb):
 
-## License
+| # | Priority | Status | Channel | Ticket |
+|---|----------|--------|---------|--------|
+| 6 | urgent | open | Phone | Emergency — storm tore shingles off, water in bedroom |
+| 3 | high | pending | Email | Warranty — ridge leak after storm (Oak Park job) |
+| 1 | medium | open | Website | Quote request — 2,200 sqft asphalt re-roof |
+| 5 | medium | open | Website | New-roof estimate — new 24×24 garage |
+| 4 | medium | pending | Email | Invoice question — $300 tear-off line item |
+| 2 | low | open | Phone | Reschedule — rain delay, Tue → Thu |
+| 7 | low | resolved | Facebook | Gutter guards — do you install them? |
 
-AGPL
+→ `SEED_OK account=1 inbox=1 contacts=2 conversations=7 open=4 pending=2 resolved=1`
+(re-run reports `new=0` — fully idempotent).
 
+## Seed + run
+
+```bash
+cd agents/support
+
+# 1. Seed Chatwoot (idempotent — writes .env with the live access token + account id)
+python3 seed.py
+
+# 2. Install deps + run the service
+pip install -r requirements.txt          # add --break-system-packages on PEP-668 hosts
+python3 -m uvicorn app:app --host 0.0.0.0 --port 8207
+#   app.py auto-loads .env, so CHATWOOT_API_TOKEN is picked up with no manual copy.
+
+# Or with Docker (point CHATWOOT_API_URL at the Chatwoot rails service, not localhost):
+docker build -t agentic-support .
+docker run --rm -p 8207:8207 \
+  -e CHATWOOT_API_URL=http://host.docker.internal:3003 \
+  -e CHATWOOT_API_TOKEN=<token from .env> \
+  -e CHATWOOT_ACCOUNT_ID=1 \
+  -e CHATWOOT_FRONT_URL=http://192.168.40.8:3003 \
+  agentic-support
+```
+
+## Environment variables
+
+| Var | Default | Meaning |
+|-----|---------|---------|
+| `CHATWOOT_API_URL` | `http://localhost:3003` | Chatwoot REST base. |
+| `CHATWOOT_API_TOKEN` | _(from .env)_ | Agent access token — sent as the `api_access_token` header. |
+| `CHATWOOT_ACCOUNT_ID` | `1` | The account id (Summit Roofing Co.). |
+| `CHATWOOT_FRONT_URL` | `http://192.168.40.8:3003` | Chatwoot UI link for the "Open in Chatwoot ↗" button (the hybrid / human-operable path). |
+| `PORT` | `8207` | uvicorn bind port. |
+| `ANTHROPIC_API_KEY` | _(optional)_ | If set, `draft_reply` writes the draft with Claude (`claude-opus-4-8`); otherwise a deterministic template is used. Either way the draft is posted as a private note. |
+
+## Endpoints
+
+- `GET /health` → `{"status":"ok","core":"chatwoot","connected": <bool>}` (connected is
+  true only when the token actually authenticates against the conversations API).
+- `GET /api/activity` → live KPIs (open tickets, first-response %, resolved, CSAT) +
+  channel breakdown + the ticket queue, all derived from Chatwoot REST. Cached 15s.
+- `GET /` → the MD3 support dashboard rendered from the live conversations. Header shows
+  "Summit Roofing Co.", a green "agent active · core: Chatwoot connected" pill, a
+  "data: live from Chatwoot" badge, and an **"Open in Chatwoot ↗"** button. An escalation
+  banner appears whenever there's an urgent/high open ticket.
+- `POST /agent/run` with `{"action": ..., "conversation_id": N}`:
+  - `"draft_reply"` → drafts a reply (Claude if `ANTHROPIC_API_KEY` is set, else a
+    deterministic template) and posts it as a **PRIVATE NOTE**
+    (`POST /conversations/{id}/messages` with `message_type:"outgoing", private:true`).
+    The customer never sees it — **sending a public reply is the human-reviewable step.**
+  - `"resolve"` → `POST /conversations/{id}/toggle_status` (open ↔ resolved).
+  - `"escalate"` → `POST /conversations/{id}/toggle_priority` (urgent) +
+    `POST /conversations/{id}/assignments` (assign to the agent).
+
+## Validation (actually run)
+
+```bash
+# Health — token authenticates
+curl -s localhost:8207/health
+#   → {"status":"ok","core":"chatwoot","connected":true}
+
+# Real KPIs from the agent layer
+curl -s localhost:8207/api/activity
+#   → counts {open:4, pending:2, resolved:1, total:7}; channels Phone/Website/Email/Facebook;
+#     queue ordered urgent→low with real ticket subjects
+
+# Dashboard contains MD3 tokens + real ticket subjects + Open in Chatwoot
+curl -s localhost:8207/ | grep -o 'Open in Chatwoot\|EMERGENCY\|2,200 sq\|--primary:#4fd1c5'
+
+# Agentic actions (each is a real Chatwoot API call)
+curl -s -X POST localhost:8207/agent/run -d '{"action":"draft_reply","conversation_id":6}'  # posts a private note (HTTP 200)
+curl -s -X POST localhost:8207/agent/run -d '{"action":"escalate","conversation_id":1}'      # priority urgent + assign
+curl -s -X POST localhost:8207/agent/run -d '{"action":"resolve","conversation_id":2}'        # toggle status
+
+# Verify the private note landed (message_type=1, private=true)
+curl -s "http://localhost:3003/api/v1/accounts/1/conversations/6/messages" \
+  -H "api_access_token: $CHATWOOT_API_TOKEN"
+```
+
+## Notes on the human-in-the-loop gate
+
+`draft_reply` deliberately posts a **private note**, not a public reply — the agent
+proposes, a human disposes. The note is clearly prefixed ("🤖 AGENT DRAFT — review before
+sending"), and the response carries `"requires": "human approval to send as public
+reply"`. This mirrors the billing module's approval gate on `refund`: the agent does all
+the deterministic work up to the point where something becomes customer-visible, then
+stops for a human.
